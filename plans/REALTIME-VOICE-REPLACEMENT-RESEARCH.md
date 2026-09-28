@@ -3,17 +3,20 @@
 > 研究日期：2026-09-28，Asia/Shanghai。代码基线：`main` / `3f3031748882713455a47ded88c58ce6956fcb1c`。
 > 范围：研究、设计及实际代码审阅；未实施功能，未下载／运行神经模型，未做 Android 性能实测。
 > 部署约束：声音采集、建档、识别、分离、转换、缓存均在 Android 手机／电视本机完成，不依赖云端或局域网 GPU。
+> 最新体积约束：优先几十 MB 的手机方案；本次轻量补充基线为 `main` / `f69db83746312b0ad98ea4c38eb907bb024a6fd0`。原有任意 A 碎片采样要求继续有效，未改成仅预置声线。
 > 按用户要求，本文件是唯一持久方案，保存在 `plans`；不另建重复 `docs` 文档，不改既有上游合并计划。
 
 ## 1. 结论与推荐
 
 **建议采用“本机声音建档 + 作品内角色识别 + 目标声音分离 + 流式音色转换 + 按原时间轴混回”的架构，先验证 ARM64 设备上的完整链路，再接入 Exo。**
 
+**按新增的“几十 MB”约束，模型首选调整为验证 OpenVoice V2 独立音色转换器的导出与量化，MeanVC2 降为质量对照。** OpenVoice 已发布转换器为 131.3 MB，FP16 约 66 MB／INT8 约 33 MB 只是理想权重体积估算，尚未得到经验证的对应产物；它也不是已验证的因果流式 Android 后端。已核实的 LLVC 单个权重确实只有 39.5 MB，但对应固定目标音色，不支持采几段任意新 A 就直接使用。第 4.5 节给出完整核算，不能把这些数字当作全功能安装包或运行内存。
+
 当前证据支持启动可行性原型，但不足以承诺“任意 Android 电视、任意影视混音、多人重叠、接近零延迟”同时成立。主要风险是从配乐、混响和重叠对白中准确取出指定角色，以及普通电视盒子持续运行整条链路的算力；单个变声模型的演示没有覆盖这些问题。
 
 | 部分 | 推荐 | 当前结论 |
 |---|---|---|
-| A 的目标音色转换 | **MeanVC2**，比较官方参考实现与 `audio.cpp` 原生实现 | 有中英零样本、流式研究和原生组件；Android 音质／性能待测 |
+| A 的目标音色转换 | **OpenVoice V2 独立转换器量化验证**；MeanVC2 保留质量对照 | 支持多参考建档和直接音频转换；几十 MB 产物、分块音质和 Android 性能均待验证 |
 | B/C/D 的身份识别 | **CAM++／ECAPA 类声纹 + VAD + 开放集拒识**，评估 WeSpeaker／sherpa-onnx 移动部署路径 | 无须从零训练识别网络，但要用作品内样本标定 |
 | 指定角色波形提取 | **参考声音条件化的流式 TSE**；SpeakerBeam、Look Once to Hear、WeSep 作模型与训练参考 | 尚未核实覆盖中文动漫混音和普通 Android 的现成完整交付件，是首要门槛 |
 | 播放器 | **先 Exo PCM，有界异步处理和原 PTS；MPV 单独适配** | 有接入位置；现有 K 歌／音高功能不等于声音替换 |
@@ -71,10 +74,13 @@
 
 | 候选 | 要求／报告结果 | 本需求价值与决策 |
 |---|---|---|
-| **MeanVC2** [S01] [S02] | 零样本、中英；单核 AMD EPYC 7542 首包 109.88 ms，ASR + VC + vocoder RTF 0.633；18M 为论文模型口径 | **第一候选**。有官方代码、模型卡与原生组件；需验证完整包、建档内存、中文情绪及分离后输入 |
-| **StreamVC** [S05] | Pixel 7 单核 XNNPACK；20 ms 块计算 10.8 ms；60 ms 架构延迟，合计 70.8 ms | 端侧可行性依据。所查官方演示无可直接采用的完整发布件，非官方实现明确无训练 checkpoint |
+| **OpenVoice V2 converter** [S44] [S45] | 官方权重 131.3 MB；内置参考编码器与波形解码器，多参考、直接音频转换 | **轻量预算下优先验证**。FP16／INT8 体积为待验证估算；点播分块、中文情绪、持续速度和量化音质未测 |
+| **MAIN-VC** [S47] | 1.31M 参数，FP32 参数理论约 5.24 MB；论文明确不含 WaveRNN vocoder | 进一步小型化研究备选；不是已核实的 5 MB 完整换声包，主权重发布、中文和手机运行仍有缺口 |
+| **Beatrice 2** [S48] | 官方开发目标最小配置 ≤30 MB、桌面单线程低负载；新声线需要训练 | 固定／已训练声线支线，不能代替任意 A 本机采样；具体最小产物和 Android ABI 未核实 |
+| **MeanVC2** [S01] [S02] | 零样本、中英；单核 AMD EPYC 7542 首包 109.88 ms，ASR + VC + vocoder RTF 0.633；18M 为论文模型口径 | 质量与流式对照。完整 Q4_K 包 342 MB，不作为当前几十 MB 预算的默认模型 |
+| **StreamVC** [S05] | Pixel 7 单核 XNNPACK；20 ms 块计算 10.8 ms；60 ms 架构延迟，合计 70.8 ms | 端侧可行性依据。所查官方演示无可直接采用的完整发布件；非官方实现明确无 checkpoint，且未实现论文的完整 streaming |
 | **RT-VC** [S06] | Apple M3 CPU：15 ms 块 + 32 ms lookahead + 14.4 ms compute = 61.4 ms | 保留候选；英语实验，完整权重／训练代码发布需核定。M3 与 Pixel 7 不能直接比较速度提升比例 |
-| **LLVC** [S07] | 16 kHz、any-to-one、CPU 低延迟；目标声音通常需训练 | 固定 A 专用模型可轻量；只作已有模型导入支线，不满足默认任意 A 碎片即用 |
+| **LLVC** [S07] [S43] | 16 kHz、any-to-one、CPU 低延迟；已发布单个权重 39,489,146 bytes | 固定 A 专用模型确实轻量；只作已有模型导入支线，不满足默认任意 A 碎片即用 |
 | **RVC** [S08] | 检索增强；README 推荐至少约 10 分钟低噪目标数据，通常每个 A 训练 | 生态成熟，可导入已有模型；不作默认。桌面 ASIO 延迟不能移用到 Android |
 | **Seed-VC** [S09] | 参考约 1–30 秒；tiny 25M；RTX 3060 Laptop 示例约 180 ms block、150 ms inference、430 ms latency | 音质／上下文／拼接参考；多组件／GPU 成本、GPLv3，2025-11-21 已归档。25M 不等于整链规模 |
 | **StreamVoice** [S10] | 流式零样本，约 124 ms 报告来自 A100 条件 | 研究对照，不能作为本机预算 |
@@ -86,7 +92,7 @@
 
 RT-VC 的 “source extractor” 是发声激励特征提取，**不是**从影视混音中取出韩立的 TSE。Zero-VC、Conan 等也已检索到，但未完成其权重、原生运行和影视适用性核查，不列入已验证推荐。
 
-### 4.2 MeanVC2 官方源码要求的修正
+### 4.2 MeanVC2 质量对照的源码适配项
 
 固定代码 [S02]：
 
@@ -139,6 +145,62 @@ issue #9 [S03] 的 Android 移植者报告 120 ms 模型 RTF < 0.7，但首出�
 | Demucs／SAM-Audio [S28] | vocals 不等于某个角色；SAM-Audio 推荐 CUDA 且独立权重许可，非普通 Android 默认 |
 | DnR v3／CDX／REAL-TSE [S29] [S30] [S31] | 用于影视、真实重叠、中英和质量验证；不能只看干净英语 SI-SDR |
 
+### 4.5 几十 MB 轻量方案：已发布体积、估算与完整能力
+
+本节 MB 按十进制 `1 MB = 1,000,000 bytes`。模型文件、下载压缩包、全部安装增量、常驻权重和进程峰值 RSS 是不同口径。**目前没有核实一个同时覆盖“任意 A 本机采样、自动识别 B/C/D、影视角色分离、多组、实时播放”的几十 MB Android 成品组合；不能宣称已经找到最小完整方案。**
+
+#### 4.5.1 可实际核对的候选
+
+| 候选／体积口径 | 核实结果 | 任意新 A 本机参考即用 | 手机／实时证据与缺口 |
+|---|---|---|---|
+| LLVC `G_500000.pth` [S43] | **39.49 MB**；39,489,146 bytes，发布元数据实值 | 否；一个模型对应固定目标音色 | 论文是 Intel i9-10850K，非 Android；仍需原生移植。可用于事先提供的声线，但不能要求用户把录音送到电脑训练来完成原需求 |
+| Beatrice 2 最小配置 [S48] | **≤30 MB 是官方开发目标**，本轮未锁定符合该体积的完整产物 | 否；新增声线需训练 | 官方列 i7-1165G7 单线程 RTF <0.2、VST 外部回环约 50 ms；不能当手机指标。默认训练约 9 GB VRAM，4090 约 40 分钟，也不是手机注册流程 |
+| OpenVoice V2 `converter/checkpoint.pth` [S45] | **131.32 MB**；131,320,490 bytes，发布元数据实值 | 是，接口支持参考音频；克隆相似度需测试 | PyTorch 音频转换实现已读；没有本项目 Android 测量，也没有已核实的官方因果流式实现 |
+| OpenVoice V2 转换器 FP16／INT8 | **约 66／33 MB，仅估算**：按有效 FP32 权重分别约减半／四分之一 | 原架构支持；量化后的声音条件是否保持有效待测 | 未导出、未下载对应量化产物。图元数据、量化参数、保留浮点算子及重复权重会改变实际大小；不称为现成“33 MB 模型” |
+| MAIN-VC 核心 [S47] | **1.31M 参数，FP32 理论约 5.24 MB**；不含 vocoder | 论文为 one-shot 任意目标，英文实验 | 论文推理依赖预训练 WaveRNN，参数和耗时统计都排除它；耗时在 V100 测量。已读 README 和 `models` 目录未找到明确主模型 checkpoint 入口，不当成即插即用包 |
+
+LLVC 的 `infer.py` 直接载入一个 `Net` checkpoint 完成波形转换；模型仓库中其他 HuBERT／RMVPE／RVC 大文件并非该推理入口的必需依赖，不能把整个仓库体积算成 LLVC。反过来，也不能把 39.5 MB 换声权重当包含角色分离与 Android 运行库的完整功能。LLVC 论文的 RTF 定义为“输出音频秒数／耗时”，报告约 2.769 倍实时；与本方案第 7 节使用的“耗时／音频秒数”相反，引用时必须换算或写清定义。
+
+Beatrice 当前 trainer `2.0.0-rc.0` README 标注该仓库代码与训练模型为 MIT；另一个旧 beta API 的限制条款不应混用于新版。最终采用的推理 API、声线和分发件仍应各自核对，不能只凭 trainer 的许可推断所有组件。
+
+#### 4.5.2 为什么优先验证 OpenVoice V2
+
+已读 [S44] `ToneColorConverter.extract_se(ref_wav_list)`、`convert(..., src_se, tgt_se, ...)` 与 `SynthesizerTrn.voice_conversion()`：
+
+- **不需要把已有音频先转成文字或重新 TTS。** 只采用音色转换路径，不引入 MeloTTS／基础语言 TTS 包；波形解码器属于该转换器本身，不再另漏算一个外部 vocoder。
+- **内部已有小型 ReferenceEncoder。** A、B 都可用同一编码器提取与转换模型匹配的条件，不需要 MeanVC2 的 WavLM Large。B 的该条件不等于可靠的角色识别声纹，不能据此直接删除独立识别模块。
+- **原生支持多参考文件。** 官方实现分别提取后简单求均值；本项目先筛除混说、极短和低质量片段，再比较最佳单段、官方平均与质量加权，禁止未经评估盲目融合。
+- **需要同时提供 B 的 `src_se` 与 A 的 `tgt_se`。** 建档时缓存两类角色对应的转换条件；不能只存 A，或者拿 CAM++ 的向量冒充 OpenVoice 条件。
+- V2 配置为 **22,050 Hz**。影视全带宽与立体声仍要走第 6 节背景保留／混回；22.05 kHz 不等于原音轨全频段保真。
+- 当前 API 按文件／整段计算，没有已核实的因果状态接口。优先实验点播有界窗口与上下文／拼接，检测句首、句尾、长度、连续情绪及重复运算开销；不能把整段函数放进 20 ms 回调就叫实时。
+
+社区 [S46] 的两份 ONNX 为 `tone_clone_model.onnx` 127,891,564 bytes 和 `tone_color_extract_model.onnx` 3,257,992 bytes，合计 **131,149,556 bytes**。它证明存在直接音频转换／提取条件的 ONNX 工程参考，**不证明官方 V2 已量化到几十 MB**；本轮未独立锁定其确切 OpenVoice 版本与官方 V2 的等价性。README 中 i7 上约 0.95 秒的例子包含 TTS 演示，不能作为 VC 单独耗时或 Android 性能。
+
+体积表仅统计 converter。官方 `ToneColorConverter` API 默认还加载 watermark 模型，运行库和实际选用的附加组件必须列入分发清单；不能把它们隐藏在首次运行下载中，仍对用户声称全部只占 33 MB。
+
+#### 4.5.3 完整包与资源预算
+
+| 必需部分 | 当前可核实数值／状态 | 轻量优化与限制 |
+|---|---|---|
+| OpenVoice 转换与参考条件 | FP32 发布权重 131.3 MB；FP16／INT8 约 66／33 MB 为估算 | 先保留 FP32 数值基线，再评估 FP16／混合 INT8；按实际算子支持决定，避免打包多份精度权重 |
+| B/C/D 识别 | CAM++ `campplus_cn_common.bin` 为 **28,036,335 bytes** [S17]；同规模 INT8 权重约 7 MB 只是估算 | 共享一套网络和多个 prototype；不能把每个人变成一份完整模型，或把参考合成编码器默认当识别器 |
+| VAD、重叠检测／目标角色分离 | VAD 有小型路径；满足影视域的完整 TSE 权重与相关条件编码器尚未选定 | 分离不能因为预算紧而被静默删除；若某个 TSE 自带可复用的识别条件，需通过等价性和拒识测试后才去重 |
+| Android 推理 runtime／JNI | 依算子、执行后端和 ABI 裁剪，当前没有已构建的新增体积实值 | 优先一套运行时；既有 TFLite 不能直接运行 ONNX。新增 native 库与两种 ABI 的增量分别报告 |
+| 档案／PCM／片段缓存 | 随用户样本和缓存策略增长，不是固定神经权重 | 共享权重、分时建档、有界 PCM、磁盘 LRU；完整安装增量与可清理缓存分开显示 |
+
+仅“转换器理想 INT8 33 MB + 识别理想 INT8 7 MB”就约 40 MB，**仍没计入 TSE、VAD、运行库及附加组件，因此不能据此承诺完整 40 MB／50 MB 包**。下载后本机离线并不免除存储成本；以用户设备上的全部必要文件核算，另列基础 App 本来已有的体积。
+
+**RAM、CPU、功耗和端到端延迟目前没有可负责地填写的手机实测值。** 33 MB INT8 文件不意味着 33 MB RSS；如果后端把该规模权重恢复成 FP32，单是对应权重存储就可能回到约 131 MB，还需计算工作区、特征、并发源状态、音频和播放器。FP16 在 CPU 上也不保证加速，量化后不支持的算子可能回退并增加复制。多组轮流说话可以共用权重；同一时刻两个人需要转换会增加计算与状态，必须单列测量。
+
+#### 4.5.4 收敛后的决定与最短验证路线
+
+1. **保留任意 A：先验证 OpenVoice V2 独立转换器。** 锁定官方权重和配置，确认 B→A 的直接音频转换与多片段条件，再做原生导出、逐组件精度比较和中文成片片段验证。通过后测含识别／TSE／混回的完整包、建档／播放 RSS 和持续 RTF。未获实施授权前不开始模型转换、训练或产品代码。
+2. **如果后续明确接受预置／导入固定声线：LLVC 是已核实 39.5 MB 实物的备选。** 多个任意 A 不能只增加小向量解决；为每个目标另配模型会增加总容量。Beatrice ≤30 MB 继续作小型固定声线候选，其 Android runtime 与具体最小产物须先落实。
+3. **如果连 OpenVoice 量化后仍超预算：MAIN-VC + 小型声码器是研发方向。** 需解决主权重、声码器匹配和中文／手机证据，不能仅换一个 vocoder 就保证原质量与速度。此路线的交付确定性低于已有官方权重的 OpenVoice。
+4. MeanVC2 完整 Q4_K 的 342 MB 排除出当前默认包；MeanVC 第一代的已读 `src/runtime/run_rt.py` 同样调用 `init_sv_model('wavlm_large', ...)` [S11]，不能只算其 VC 与 Vocos 就声称已规避重型建档。纯音高／共振峰 DSP 可以更小，但不能完成任意 A 的音色克隆，不作为本需求的完成方案。
+
+这是“优先做哪个可证伪原型”的推荐，不是已确认的最小模型排名。若手机上的音质、完整体积或持续速度不通过，保留原需求、记录未通过门槛，再比较备选；不能把支持固定 A 或仅处理无背景单人音频当作原需求已全部满足。
+
 ## 5. 数据模型、碎片建档和多组规则
 
 ### 5.1 分开“合成成谁”和“识别谁”
@@ -156,6 +218,7 @@ CharacterProfile B
   samples[] -> SampleClip
   recognitionPrototypes[recognizerRevision]
   extractionCondition[separatorRevision]
+  sourceConversionCondition[converterRevision, extractorRevision, precision]
 
 SampleClip
   sourceIdentity, sourceKind, trackId, startPtsUs, endPtsUs
@@ -177,8 +240,8 @@ PlaybackSession
 2. VAD 去掉非语音，保留适量语音上下文；检测混说、削波、音乐覆盖和极短段。增强可能改变音色，原样本与增强候选分开，不用强降噪结果覆盖原件。
 3. 初始采样引导可从每段约 2–8 秒、累计约 15–30 秒以上有效语音开始测试，覆盖多个句子／情绪；**这是建议体验目标，不是模型硬性要求或音质保证**。单字、笑声可保存，但不能独立决定身份。
 4. 逐段提取识别 embedding，检查同人一致性和离群段；对识别向量归一化、质量加权聚类，保留中性／高情绪等多个 prototype。重复同一句不因数量而获得过大权重。
-5. A 的合成条件初始采用最佳参考段；其他段用于选出稳定条件和不同风格候选。只有模型支持且实测通过后才做多参考融合；不能假设任意拼接或平均 raw embedding 一定更好，更不能复用 B 的归一化识别向量。
-6. 本机后台串行计算重型建档特征，保存模型版本匹配的条件和可复用 GTM KV，随后卸载 WavLM 等；支持取消、进度与失败恢复，不与高规格视频抢满核心。
+5. A 的合成条件初始采用最佳参考段；其他段用于选出稳定条件和不同风格候选。OpenVoice 原生支持多参考均值，但仍与质检后的单段／加权策略比较；其 B 源转换条件也需单独保存。不能假设任意拼接或平均 raw embedding 一定更好，更不能复用 B 的归一化识别向量。
+6. 本机后台逐段计算并保存模型版本匹配的条件，建档编码器与播放按需分时使用；支持取消、进度与失败恢复，不与高规格视频抢满核心。只有选择 MeanVC2 质量对照时才涉及重型 WavLM 与可复用 GTM KV，不把它们带入轻量默认包。
 7. 只从用户确认的原始输入更新档案，不自动吸收低置信度片段，不从转换结果学习；否则可能把其他人或 A 的合成声逐渐污染进 B 档案。
 
 ### 5.3 开放集识别与短对白
@@ -273,8 +336,9 @@ y = x + Σ g_i · (v_i - s_i),    0 ≤ g_i ≤ 1
 
 | 路径 | 优点 | 代价与推荐 |
 |---|---|---|
-| MeanVC2 的最小 C++／GGML 子集 | 已有 ASR、speaker、VC、vocoder 实现；可避免整套 Python | 首选原型。先 CPU baseline；需要 NDK/JNI、裁剪、线程和数值一致性验证，不因“C++”就声称快 |
-| ONNX Runtime Mobile／XNNPACK | Android 部署路径成熟，可裁剪算子，适合 VAD／声纹 [S37] | 作为识别运行时候选；MeanVC2 的所有状态和算子是否可导出要实际验证 |
+| OpenVoice 独立转换器 + ONNX Runtime Mobile | 直接音频转换、内部参考编码器；存在社区 ONNX 工程参考 [S44] [S46] | 轻量首验路线；锁定 V2 等价性，核对卷积／转置卷积／GRU、动态长度和频谱预处理，再做量化与点播窗口，不冒称已有 Android SDK |
+| ONNX Runtime Mobile／XNNPACK | Android 部署路径成熟，可裁剪算子，适合 VAD／声纹 [S37] | 争取与转换器共用 runtime；实际量化、图划分／回退和 CPU 性能逐项核定 |
+| MeanVC2 的最小 C++／GGML 子集 | 已有 ASR、speaker、VC、vocoder 实现；可避免整套 Python | 质量／流式对照，完整权重不符合当前几十 MB 默认预算；需要 NDK/JNI、线程和数值一致性验证 |
 | WeSpeaker MNN 路线 | 有现成相关 PR，适合评估轻量 speaker 模块 [S17] | 与 ORT 选最少必要依赖，避免为相近任务打包三套 runtime |
 | 当前项目 TFLite 2.17.0 | 已有依赖，可做部分小模型 | 现有 Basic Pitch 不是 VC；不能直接加载 PyTorch/JIT／GGUF。算子、delegate、版本逐项核定 |
 | 整套 Python／桌面推理依赖 | 便于研究复现 | 不采用产品路径；现有 Python 能力不意味着 PyTorch、CUDA、音频驱动栈适合 Android APK |
@@ -344,8 +408,9 @@ NNAPI 已弃用 [S38]，不能把“电视有 NPU”当可用性条件。GPU／d
 | 方案 | 正确性／质量 | 性能／兼容性 | 维护／回退 | 结论 |
 |---|---|---|---|---|
 | 不改现状 | 原播放稳定，但无目标功能 | 无额外消耗 | 零依赖变化 | 作为关闭功能的基线与回归对照，不满足需求 |
-| 原样接入 MeanVC2 Python 或 `audio.cpp` demo | 可演示单人 VC，缺少影视分离、多组、媒体时间契约 | 重型建档常驻／重复计算，整段输出增长；Android 未测 | 追随 demo 容易带入无关依赖 | **不采用**；保留为数值／音质参考 |
-| WebHTV 窄范围适配 | 分开建档、识别、提取、转换、混音；unknown 和失败原声 | 按设备与格式分级，有界队列；先 Exo 再 MPV | 能力开关、版本化模型与档案，逐阶段可回退 | **推荐**，先通过模型／设备门槛再生产集成 |
+| 原样接入 OpenVoice／MeanVC2 Python 或 `audio.cpp` demo | 可演示单人 VC，缺少影视分离、多组、媒体时间契约 | 整段处理、未裁剪依赖或重型建档；Android 未测 | 追随 demo 容易带入无关依赖 | **不采用**；保留为数值／音质参考 |
+| WebHTV 窄范围适配 | 分开建档、识别、提取、转换、混音；unknown 和失败原声 | 优先验证 OpenVoice 量化；按设备与格式分级，有界队列；先 Exo 再 MPV | 能力开关、版本化模型与档案，逐阶段可回退 | **推荐**，先通过完整体积／模型／设备门槛再生产集成 |
+| LLVC／Beatrice 固定声线 | 已训练 A 的小型变声，不能任意参考即用 | 小权重不等于完整角色替换；多个 A 的总容量需核算 | 声线与后端分别版本化 | 仅在用户明确接受固定声线后作为产品支线，未替代默认要求 |
 | 仅全片本机预处理后播放 | 可用更长上下文，较容易修正错认 | 准备时间／磁盘占用大，仍受设备限制 | 可作补充模式 | 有用但不替代用户的实时目标 |
 | 外部 GPU／云服务 | 可用更大模型 | 违背全部本机约束 | 增加网络和数据外传依赖 | 排除出产品默认及隐藏回退路径 |
 
@@ -359,7 +424,7 @@ ABI／native 库所有权在后续实现中明确到一个构建模块；裁剪�
 
 | 顺序 | 独立交付单元 | 通过条件／未通过时的决定 |
 |---|---|---|
-| 1：模型与设备可行性 | 固定 MeanVC2 官方／native 版本，在 Android 做参考音建档、VC、声纹、一个 TSE 候选及混回的最小实验 | 从本机样本直接建 A，断网输出；报告整包、峰值内存、中文质量、整链 RTF。TSE 或弱设备不过就调整已声明能力／候选，不带着未知结论进入完整 UI |
+| 1：模型与设备可行性 | 按第 4.5 节固定 OpenVoice V2，验证参考条件、FP32 基线及 FP16／INT8 候选；在 Android 做 VC、声纹、一个 TSE 候选与混回的最小实验 | 从本机片段直接建 A／B，断网输出；报告实际完整包、量化质量、峰值内存、中文效果、整链 RTF。体积、TSE 或弱设备不过就明确记录缺口／比较备选，不带着未知结论进入完整 UI |
 | 2：采样与规则 | 非连续片段、A/B 分档、一对多和多组冲突、试听、删除／取消、版本化缓存 | 错片段可移除重算；实际选中音轨／PTS 正确；不依赖外部训练；相同配音版约束生效 |
 | 3：Exo 生命周期和时间 | 先用恒等处理验证有界异步适配，再接本机转换；关闭功能走原输出 | 无丢样本／重复／音画漂移，EOS 排空、seek 旧结果隔离、直通切换和恢复通过；只测批准的 ABI／代表路径 |
 | 4：自动影视替换 | 作品内识别、TSE、背景混音、多组轮流发言、未知人回退 | 在真实中文影视片段上同时满足误替换、覆盖率、可懂度、相似度、背景损伤和持续性能，不能以降低覆盖率逃避 |
@@ -401,8 +466,8 @@ ABI／native 库所有权在后续实现中明确到一个构建模块；裁剪�
 ### 11.4 仍未解决的具体门槛
 
 1. **影视 TSE**：没有核实一个已发布、普通 Android 可运行且能稳定提取动漫角色的完整模型；需以真实混音实验选择，不用高分英语／双耳实验代替。
-2. **建档与内存**：完整 F32／Q4 包体已知，但 Android 峰值、量化误差、组件分时释放未测。
-3. **全带宽音质**：16 kHz VC 的限制与高频／空间重建未解决，必须作为听感验收项。
+2. **几十 MB 的完整包与内存**：OpenVoice FP16／INT8 为待验证估算，尚无包含识别、TSE、运行库的最终产物；Android 峰值、量化误差和组件分时释放未测。
+3. **分块和全带宽音质**：OpenVoice 22.05 kHz 转换器尚未验证有界窗口连续转换；16／22.05 kHz 模型的高频与空间重建须纳入听感验收。
 4. **持续性能与重叠**：单个 VC 的 RTF 不代表 TSE + 识别 + 多目标转换 + 视频渲染可持续。
 5. **生命周期与许可证**：native 接口／共享权重的实际线程安全、模型权重的完整来源链和再分发条件待实施阶段固化。
 
@@ -426,19 +491,19 @@ ABI／native 库所有权在后续实现中明确到一个构建模块；裁剪�
 | [S02] MeanVC2 官方源码 | `13acf84c1bf135ea5edad9c245b345289b06b33e`，A | 已读 `runtime/run_rt.py`、`runtime/src/speaker.py`；160 ms 输入块、两步、raw embedding、cache。另读 [官方模型卡](https://huggingface.co/ASLP-lab/MeanVC2)，说明发布入口；未下载完整权重 |
 | [S03] MeanVC2 Android issue #9 | 访问日页面，D | RTF <0.7 与 600–800 ms 首出声并存的现场报告。相关 [#3](https://github.com/ASLP-lab/MeanVC2/issues/3) 涉及 ASR／WER，[#6](https://github.com/ASLP-lab/MeanVC2/issues/6) 指向原生实现；均非本机验收证据 |
 | [S04] audio.cpp MeanVC2 实现 | `77491a33c589c53ff18add050095cf35647c8213`，A/C | 已读 session、assets、speaker encoder、flow、vocoder 相关逻辑、[模型说明](https://github.com/0xShug0/audio.cpp/blob/77491a33c589c53ff18add050095cf35647c8213/docs/models/meanvc2.md)、[manifest](https://github.com/0xShug0/audio.cpp/blob/77491a33c589c53ff18add050095cf35647c8213/model_specs/meanvc2.json)、[benchmark 入口](https://github.com/0xShug0/audio.cpp/blob/77491a33c589c53ff18add050095cf35647c8213/tests/meanvc2/meanvc2_python_warm_bench.py) 和 [许可表](https://github.com/0xShug0/audio.cpp/blob/77491a33c589c53ff18add050095cf35647c8213/docs/model_licenses.md)。支持 native 候选及内存／状态改造决定，不证明 Android 已支持 |
-| [S05] StreamVC 论文 | `2401.03078v1`，B | Pixel 7／XNNPACK 的低延迟依据。[非官方实现](https://github.com/yuval-reshef/StreamVC/tree/a81ef600655d04976699ea6c4663ddc81d8692ba) 明确无训练权重，C；不能直接交付 |
+| [S05] StreamVC 论文 | `2401.03078v1`，B | Pixel 7／XNNPACK 的低延迟依据。[非官方实现](https://github.com/yuval-reshef/StreamVC/tree/a81ef600655d04976699ea6c4663ddc81d8692ba) 明确无训练权重，且未实现论文的完整 streaming，C；不能直接交付 |
 | [S06] RT-VC 论文 | `2506.10289v1`，B | M3／61.4 ms 与 articulatory 特征；已读 [源码](https://github.com/Berkeley-Speech-Group/RT-VC/tree/9d9a55d0fb6cd53ebba108a0bab3380b1fc3c066)，A，及 [训练代码请求 #4](https://github.com/Berkeley-Speech-Group/RT-VC/issues/4)、[权重请求 #5](https://github.com/Berkeley-Speech-Group/RT-VC/issues/5)，D；发布完整性需确认 |
 | [S07] LLVC 论文 | `2311.00873v1`，B | CPU、any-to-one 约束；[项目](https://github.com/KoeAI/LLVC/tree/1627c5d358cf9bb2b92b0ccc513d8b36807c923d)，C。适合固定目标，不满足任意参考即用 |
 | [S08] RVC 项目说明 | `81eed5e8f68b6bed1789f682fe78cdd324495afc`，C | 训练样本建议、检索与实时 GUI；桌面配置和每声音训练不能作为本机零样本默认 |
 | [S09] Seed-VC 原始论文／代码 | `2411.09943v1`，B；[源码](https://github.com/Plachtaa/seed-vc/tree/51383efd921027683c89e5348211d93ff12ac2a8)，A/C | 已读 README、`real-time-gui.py` 和 GPLv3 LICENSE；音色泄漏、上下文、GPU 示例与流式拼接有参考性，归档状态影响维护选择 |
 | [S10] StreamVoice | ACL 2024 `2024.acl-long.396`，B | 上下文感知流式转换；GPU 实验的延迟不能作为 Android 指标 |
-| [S11] MeanVC | `2510.08392v3`，B；[源码](https://github.com/ASLP-lab/MeanVC/tree/fe5286ae205a26ad4eba64395513130bd5974b46)，C | 前代 mean-flow 对照，帮助区分延迟、输出粒度和推理量 |
+| [S11] MeanVC | `2510.08392v3`，B；[源码](https://github.com/ASLP-lab/MeanVC/tree/fe5286ae205a26ad4eba64395513130bd5974b46)，A/C | 前代 mean-flow 对照；已读 [runtime](https://github.com/ASLP-lab/MeanVC/blob/fe5286ae205a26ad4eba64395513130bd5974b46/src/runtime/run_rt.py) 同时用 WavLM Large embedding 与 prompt mel，不能只报 VC 文件大小 |
 | [S12] StreamVoiceAnon | `201705182c045298225071481e7cd59d537e935e`，A/C；[论文](https://arxiv.org/abs/2601.13948v3)、[Plus](https://arxiv.org/abs/2603.06079)，B | 多参考、alpha、匿名化和情绪方向；依赖／权重状态阻止直接当 Android 精确模仿方案 |
 | [S13] X-VC | `49df8c591eafc48b096e466d96f9839f9c0dd739`，C | README 的中英、组件与发布说明；未验证全链手机部署，保留对照 |
 | [S14] w-okada voice-changer | `d8ef15799470193f7c8176ef471245753a656626`，C | 包装和设备 I/O 架构参考；客户端与推理服务要区分 |
 | [S15] ECAPA-TDNN | `2005.07143v3`，B | 说话人表征基础；验证任务不是角色分离或音色合成 |
 | [S16] WeSpeaker | `9fecd6cb4f47475d01761d87c826298dff4ef18c`，C | 模型与 ONNX／MNN 部署资料；支持识别模块候选，不支持直接把其 embedding 塞进另一 VC |
-| [S17] CAM++ 模型卡／MNN PR | 模型卡访问日快照，C；[WeSpeaker PR #310](https://github.com/wenet-e2e/wespeaker/pull/310)，A/C | 中英 speaker verification 和 MNN runtime 入口；仍要测动漫情绪／跨域阈值 |
+| [S17] CAM++ 模型卡／MNN PR | 模型卡访问日快照，C；[WeSpeaker PR #310](https://github.com/wenet-e2e/wespeaker/pull/310)，A/C；[文件元数据](https://huggingface.co/api/models/funasr/campplus/tree/main?recursive=true&expand=false)，A | 中英 speaker verification 和 MNN runtime 入口；`campplus_cn_common.bin` 28,036,335 bytes，LFS SHA-256 `3388cf5fd3493c9ac9c69851d8e7a8badcfb4f3dc631020c4961371646d5ada8`。7 MB INT8 仅估算；仍要测动漫情绪／跨域阈值 |
 | [S18] sherpa-onnx speaker manager | `040afe360a38e25daaa325ce8889abf93ea02609`，A | 已读多 embedding 添加、归一化和 threshold search 代码；[部署文档](https://k2-fsa.github.io/sherpa/onnx/speaker-identification/index.html)，C。需补 open-set 和质量控制 |
 | [S19] Silero VAD README | `master` 访问日文档快照，C | 小型 VAD 运行方式和模型入口；仅负责语音活动，不证明目标角色判断 |
 | [S20] diart 原文与实现 | `392d53a1b0cd67701ecc20b683bb10614df2f7fc` 内 `paper.pdf`，B；[README](https://github.com/juanmc2005/diart/blob/392d53a1b0cd67701ecc20b683bb10614df2f7fc/README.md)，C | rolling buffer、overlap-aware pooling、cannot-link、延迟取舍；不输出每个人独立声轨 |
@@ -464,6 +529,12 @@ ABI／native 库所有权在后续实现中明确到一个构建模块；裁剪�
 | [S40] Media3 AudioProcessor／AudioSink 文档 | 官方动态 API，A；[DefaultAudioSink.Builder](https://developer.android.com/reference/androidx/media3/exoplayer/audio/DefaultAudioSink.Builder) | 辅助 PCM processing、元数据和 sink 配置；实际契约以本地 fork sources.jar 为准 |
 | [S41] WebHTV 当前版本／锁 | 本地基线 `3f3031748882713455a47ded88c58ce6956fcb1c`，A | 证明构建实际版本与 fork 来源；第 9 节的具体文件审阅决定了接入与不宜复用的路径 |
 | [S42] audio.cpp GGUF 文件元数据 | 模型仓库 revision `83c5d96c03023ff5a7712570d057ce26c8769f98`，A | [访问时文件 API](https://huggingface.co/api/models/audio-cpp/audio.cpp-gguf/tree/main/MeanVC2-GGUF?recursive=false&expand=false) 与 [revision API](https://huggingface.co/api/models/audio-cpp/audio.cpp-gguf/revision/83c5d96c03023ff5a7712570d057ce26c8769f98) 给出文件大小和 LFS hash；支撑包体决策，不证明 RSS 或量化音质 |
+| [S43] LLVC 权重与推理入口 | 模型 revision `ebfe8c0fdeb974a7eeb463b3abbc8ce42a0e3851`，A；代码 `1627c5d358cf9bb2b92b0ccc513d8b36807c923d`，A | [文件 API](https://huggingface.co/api/models/KoeAI/llvc_models/tree/main?recursive=true&expand=false)、[infer.py](https://github.com/KoeAI/LLVC/blob/1627c5d358cf9bb2b92b0ccc513d8b36807c923d/infer.py)：单权重 39,489,146 bytes，LFS SHA-256 `cceb7ab9621f84d62d283725ae3281cacb04f762d6a088fe3e97c1a29d4b8c0e`；无需同仓库 RVC 对比模型，目标音色固定 |
+| [S44] OpenVoice 官方源码 | 访问时 HEAD `74a1d147b17a8c3092dd5430504bd83ef6c7eb23`，A | 已读 [api.py](https://github.com/myshell-ai/OpenVoice/blob/74a1d147b17a8c3092dd5430504bd83ef6c7eb23/openvoice/api.py) 和 [models.py](https://github.com/myshell-ai/OpenVoice/blob/74a1d147b17a8c3092dd5430504bd83ef6c7eb23/openvoice/models.py)：多参考均值、内部 ReferenceEncoder、`src_se`／`tgt_se`、直接波形转换、默认 watermark 加载；不需要额外 TTS／WavLM，不证明流式与 Android 性能 |
+| [S45] OpenVoice V2 官方权重与配置 | `main` 访问日文件快照，A；以 LFS hash 标识权重 | [文件 API](https://huggingface.co/api/models/myshell-ai/OpenVoiceV2/tree/main?recursive=true&expand=false)：`converter/checkpoint.pth` 131,320,490 bytes，LFS SHA-256 `9652c27e92b6b2a91632590ac9962ef7ae2b712e5c5b7f4c34ec55ee2b37ab9e`；[配置](https://huggingface.co/myshell-ai/OpenVoiceV2/blob/main/converter/config.json) `_version_=v2`、22,050 Hz。量化值未实测 |
+| [S46] OpenVoice 社区 ONNX | `seasonstudio/openvoice_tone_clone_onnx` 访问日模型卡／文件 API，A/C | 两图合计 131,149,556 bytes；转换图 LFS SHA-256 `ea01c404712bc208694f79613488212e8cb7ad171c58361c22b645ca8b380197`，提取图 `a90ce9048c8ad43ef3ebeb15ea5a1837ffa28669d61d78f749ccc2a648710747`。可作导出参考，具体 OpenVoice 版本／V2 等价性未锁定，不复用其 TTS 演示耗时作为 VC 指标 |
+| [S47] MAIN-VC 论文／官方实现 | `2405.00930v2`，B；[代码](https://github.com/PecholaL/MAIN-VC/tree/36122c0f1d2690531db2dc74a3231c311964039b)，A/C | 1.31M 与推理时间明确排除 vocoder，使用 WaveRNN、V100 测量；已读 README／models 目录，未核实主 checkpoint 的公开下载，作为小模型研发备选 |
+| [S48] Beatrice Trainer | `2.0.0-rc.0`，2025-08-31 发布说明，访问日 README，C | 官方开发目标 ≤30 MB、i7 单线程 RTF <0.2、VST 约 50 ms；训练约 9 GB VRAM／4090 40 分钟，新增声音需训练；当前仓库 MIT。未核实 Android runtime 和满足最小体积的完整产物，不能与旧 beta API 许可混用 |
 
 [S01]: https://arxiv.org/abs/2606.09050v1
 [S02]: https://github.com/ASLP-lab/MeanVC2/tree/13acf84c1bf135ea5edad9c245b345289b06b33e
@@ -507,14 +578,20 @@ ABI／native 库所有权在后续实现中明确到一个构建模块；裁剪�
 [S40]: https://developer.android.com/reference/androidx/media3/common/audio/AudioProcessor
 [S41]: ../third_party/media-lock.json
 [S42]: https://huggingface.co/audio-cpp/audio.cpp-gguf/tree/83c5d96c03023ff5a7712570d057ce26c8769f98/MeanVC2-GGUF
+[S43]: https://huggingface.co/KoeAI/llvc_models/blob/ebfe8c0fdeb974a7eeb463b3abbc8ce42a0e3851/models/checkpoints/llvc/G_500000.pth
+[S44]: https://github.com/myshell-ai/OpenVoice/tree/74a1d147b17a8c3092dd5430504bd83ef6c7eb23
+[S45]: https://huggingface.co/myshell-ai/OpenVoiceV2/tree/main/converter
+[S46]: https://huggingface.co/seasonstudio/openvoice_tone_clone_onnx
+[S47]: https://arxiv.org/abs/2405.00930v2
+[S48]: https://huggingface.co/fierce-cats/beatrice-trainer/blob/main/README.md
 
 ## Recovery anchor
 
-- 任务：`REALTIME-VOICE-RESEARCH`，`assessment`，范围仅本文件；guard 已启动。
-- 基线：`main` / `3f3031748882713455a47ded88c58ce6956fcb1c`。保护初始 `.codex-resume/`、`app/.cxx/`、`codex-resume` 共 108 个未跟踪文件。
+- 当前任务：`REALTIME-VOICE-LIGHTWEIGHT`，`assessment`，范围仅本文件；目标是在保留任意 A 本机采样的前提下修订几十 MB 候选与证据，不实施产品。
+- 当前基线／回退锚点：`main` / `f69db83746312b0ad98ea4c38eb907bb024a6fd0`；此前完整研究为 `REALTIME-VOICE-RESEARCH`，代码审阅基线仍见第 9 节。保护初始 `.codex-resume/`、`app/.cxx/`、`codex-resume` 共 108 个未跟踪文件。
 - 已完成论文、官方／C++ 源码、完整模型体积和本地 Exo／MPV／K 歌链路审阅；本轮没有产品代码／依赖／产物变更或模型／设备实测。
-- 成果：第 1–13 节已写完，含完整用户流程、候选与证据、建档／多组／混音／时钟、Android 部署、逐文件代码建议、验收及回退。无未验证的产品代码变更；模型和设备能力尚未实测。
+- 成果：第 1–13 节已写完，本次补充第 4.5 节及 [S43]–[S48]，将 OpenVoice 独立转换器设为轻量首验、MeanVC2 降为对照；补充 B 的源转换条件和统一运行时方向。已核实 LLVC 39.5 MB、OpenVoice 131.3 MB 发布元数据；66／33 MB 量化值明确为估算。未验证编辑仅为本文档，产品代码无变更。
 - 临时证据：`/private/tmp/webhtv-voice-research-20260928/`，不作为唯一持久证据；未保存访问令牌。
-- 未决：Android 整链吞吐、建档内存、影视 TSE／全带宽、多人重叠、完整权重许可。
+- 未决：OpenVoice 量化实际体积／音质及有界窗口、完整几十 MB 包、Android 整链吞吐和建档内存、影视 TSE／全带宽、多人重叠、最终分发件许可。固定声线未获用户选择，不能替代原要求。
 - 文档静态验证、原子提交与本地恢复标签由本轮 guard 的 Verification／提交记录留痕；不推送。
-- 唯一后续行动：获得实施授权后，按第 11 节第 1 阶段完成 Android 本机整链可行性原型；不要直接跳过 TSE／建档内存门槛实现完整界面。
+- 唯一后续行动：获得实施授权后，按第 4.5.4 节第 1 项先验证 OpenVoice V2 的本机多参考转换、导出与量化，再据结果推进第 11 节整链门槛；不要直接实现完整界面。
