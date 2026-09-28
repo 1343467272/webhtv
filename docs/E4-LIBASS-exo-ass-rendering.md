@@ -2,6 +2,93 @@
 
 ## Recovery anchor
 
+- 当前目标/授权（2026-09-28）：用户结束声音替换调研，要求审阅当前 Exo 特效字幕/内嵌字体并对比 GitHub 成熟实现，随后明确“看看是否需要优化，然后补齐32位”。本次继续稳定任务 `E4-LIBASS`，先完成下面第 18 节评估，随后实施 32 位支持；无需再次询问该项实施授权。
+- 当前单元：`E4-LIBASS-compat-audit-20260928` / `assessment`；`main`，基线 `78634fefd4faf1852b414b6ec9e309144de8b655`。本单元只更新本文件和总索引；保护 `.codex-resume/`、`app/.cxx/`、`codex-resume` 共 108 个初始未跟踪文件。
+- 已完成：实际 Java/独立 JNI/锁/构建/Media3 sources.jar 审阅，确认仅 64 位进程准入和单 arm64 库；核对字体附件、回退阈值、Surface、HDR/副字幕/拼接媒体边界；重新读取 GitHub 固定源码、PR/issue 和 NDK/Matroska 文档，结论见第 18 节。
+- 未验证：32 位库/包尚未构建，32 位运行与性能尚未验证。连接设备 vivo V2453A/API 35 只声明 `arm64-v8a`、`abilist32` 为空、native bridge 为 0，不能运行 ARMv7 测试；已请求可用的 32 位测试设备信息。
+- 证据：`/private/tmp/webhtv-exo-ass-audit-20260928/`；来源与决定在本文持久记录，不依赖临时目录才能理解结论。当前未修改产品代码、锁或原生制品。
+- 下一动作：完成评估文档静态检查与原子归档，按第 18.5 节启动已获授权的双 ABI 实施单元。
+
+## 18. 设备差异复核与 32 位补齐方案（2026-09-28）
+
+### 18.1 本次结论与实际调用链
+
+**当前 WebHTV Exo 已经具备真正的 libass、MKV 字体附件和独立字幕层，常规 ARM64 主字幕并非只走 Media3 的基础 SSA。支持仍有明确条件，不能宣传为所有设备/输出模式完整一致。32 位是已证实的缺口，用户已授权优先补齐。**
+
+审阅基线 `78634fefd4faf1852b414b6ec9e309144de8b655`；实际依赖 Media3 `1.11.0-alpha01-fongmi`、源基线 `e3e922d5c01bc0b564849940fe589daf37360d15` 加锁中补丁；独立 libass 固定 `89cc0f4e450d64f74281a17d7f11ed05229665e8`。旧文档中的实验开关、SDR-only 限制已由第 15/17 节实现取代，不重新提为待修复问题。
+
+```text
+ExoPlayerEngine -> ExoAssSession.createIfEnabled
+  -> ExoUtil.withAssObserver（主 TextRenderer 的原始 ASS/SSA 与媒体时钟）
+  -> MediaSourceFactory.beginMediaFonts
+     -> DolbyVisionP81ExtractorsFactory -> AssFontMatroskaExtractor -> AssFontSet
+  -> AssFonts.prepare -> AssNative.create -> ass_add_font + fontconfig
+  -> libass -> GLES2 mask 合成 -> AssSurfaceHost 独立透明 SurfaceView
+  -> 成功接管后隐藏重复 Cue；失败则恢复普通 SubtitleView
+```
+
+### 18.2 已证实的支持范围与缺口
+
+| 条件/现象 | 当前源码证据 | 判断与本次决定 |
+| --- | --- | --- |
+| 32 位系统或 32 位 APK 显示普通字体、缺少复杂特效 | `ExoAssSession.java:73–74` 使用 `Process.is64Bit()`；`exo-ass-lock.json`、CMake、构建/验证脚本和 prebuilt 均仅 arm64 | **确定缺口，本次实施**。64 位 CPU 不等于当前进程是 64 位；要补完整 ARMv7 构建与正常会话接线 |
+| ARM64 普通主 ASS、MKV TTF/OTF/TTC 字体附件 | `AssFontMatroskaExtractor` 捕获附件；`AssFontSet` 按内容去重；native 在建 renderer 前 `ass_add_font`，匹配字体内部 family | 已有有效实现及第 13–15 节历史设备证据；不把它当成未实现，更不强制替换 FontName |
+| 隧道播放、TextureView、旋转视频、DRM 等 | `admittedLocked()` 排除 tunneling；`AssSurfaceHost.update()` 要求视频为 SurfaceView 且父层为 FrameLayout；`AssVideoPolicy.supports()` 限制 rotation/DRM/颜色 transfer | 明确能力边界，可表现为同片不同设置效果不同。32 位补齐不自动消除这些限制；后续按故障样本独立评估 |
+| HDR10/HLG/DV | `AssVideoPolicy` 已允许受支持 transfer，HDR 使用独立 SDR RGB；第 17 节用户验收已归档 | 历史 SDR-only 原因已经修复；不能继续笼统声称 HDR 必定回退。旧系统合成亮度/alpha 仍需对应设备证据 |
+| 弱设备播放一段后特效消失 | `ExoAssSession.drain()`：单次 native render >100 ms，或连续三次 render+upload >33.334 ms，会进入 `render-time-budget` 回退 | 是现有运行时保护，不证明设备完全不能加载字体；ARMv7 必须保留有界保护并单独测负载，不能通过删除保护宣称性能通过 |
+| 字体附件过大/过多 | `AssFontSet` 单字体 16 MiB、总 32 MiB、64 个；超限设置 `font-budget`，会话整体回退 | 可解释特定片源失败，未使用的大附件也会触发；是内容边界，不一定是设备根因。资源限额/降级提示后续独立优化 |
+| 字体不存在、未带字库或字库不全 | `AssFonts.prepare()` 扫描可读系统字体目录；API 29+ 也枚举 SystemFonts；没有内置固定 CJK 字库 | 不同厂商系统字体的替补结果可能不同；“内嵌字幕轨”或 `Fontname` 文本不等于实际附带字体文件 |
+| ASS 文本自身 `[Fonts]` 内嵌数据 | `exo_ass.cpp` 明确 `ass_set_extract_fonts(library, 0)` | 与 MKV Attachments 不同；该种脚本字体提取当前未开启，不应统称所有形式的内嵌字体都支持 |
+| 字体位于 MKV 尾部 | 适配器仅在读到 Attachments 时收集；实际 MatroskaExtractor 的 SeekHead 仅处理 Cues/SeekHead/Tracks，没有字体附件预取 | 晚到字体可重建/replay，但开播前未必拿到；应增加尾部附件专用语料。未取得用户样本前不把它定为该反馈的根因 |
+| 自有拼接 URL 的字体丢失 | `MediaSourceFactory.createMediaSource()` 创建字体集后，拼接分支进入 `createConcatenatingMediaSource()`，使用 `getExtractorsFactory()` -> `buildExtractorsFactory(null)` | **确定接线缺口**，仅影响该拼接路径；独立修正需定义各子源字体隔离，避免同名字体跨片段污染，未混入 32 位构建阶段 |
+| 副字幕变为普通文字 | `SecondarySubtitleCues.atTop()` 按既有产品设计转为 String、移除字体/大小/颜色 span | 这是对齐 MPV 默认 strip 的已批准行为，非新设备 bug；双路原样 libass 属于另一项能力 |
+
+另一个输入一致性问题：附件识别接受 WOFF2，但 FreeType 的锁定构建关闭 Brotli；不能只凭 MIME 被接受就承诺该字体实际可解码。首要媒体格式仍为 Matroska TTF/OTF/TTC，WOFF2 等需独立固定输入验证及依赖成本评估。
+
+### 18.3 本次重新读取的 GitHub/官方证据
+
+访问日均为 **2026-09-28**，通过已配置代理获取正文/源码；A=规格或实际源码，B=成熟实现/维护者解释，D=尚未在本项目复现的设备报告。本次没有请求合并一批上游 commits，下列是固定参考版本与处置，不扩展无关历史台账。
+
+| 来源/完整 revision | 已读证据与支持的判断 | 本地处置 |
+| --- | --- | --- |
+| [libass-android](https://github.com/peerless2012/libass-android/tree/04dcc7d49cfe35076fce5eea81c5918f381caa47)，`04dcc7d49cfe35076fce5eea81c5918f381caa47`，A/B；本次 HEAD 与前次研究相同 | `AssMatroskaExtractor.kt`、`AssHandler.kt`、`AssSubtitleTextureView.kt`、`lib_ass/build.gradle.kts`：字体附件 -> font registration -> libass -> overlay；仍使用反射，附件数据到达时假定 name/mime 已存在 | 参考架构，**不整包替换**。本地已处理 AttachedFile 字段乱序、字体先到/晚到、去重和有界输入，保留这些保护 |
+| [Jellyfin Android TV](https://github.com/jellyfin/jellyfin-androidtv/blob/a79e6cf608b4886bb136f6db111a05c422066463/playback/media3/exoplayer/src/main/kotlin/ExoPlayerBackend.kt)，`a79e6cf608b4886bb136f6db111a05c422066463`，A/B | 真实 Exo backend 用 `AssHandler(OVERLAY_OPEN_GL)`、`withAssMkvSupport` 和 AssSubtitleView；版本目录仍为 ass-media 0.5.1 | 成熟消费者证明路线成立，不证明任意设备稳定；保留本地 Media3/DV/音频工厂，不照搬便捷 builder |
+| libass-android [#78](https://github.com/peerless2012/libass-android/issues/78)、[#79](https://github.com/peerless2012/libass-android/pull/79)，D/B；合并 `fa36424262e81e00a28a9fe81e4267ff148bd470` | TCL P8M/Mali-470 ES2 缺 `GL_EXT_unpack_subimage` 导致 GL 错误；#79 在 2026-06-04 合并，当前源检测扩展并回退位图上传 | 本地 `mask_copy.h` 按行紧密复制、`GL_UNPACK_ALIGNMENT=1`、GL_ALPHA 上传，不调用 ROW_LENGTH 扩展；**已有等价保护，保留，不重复引入补丁** |
+| libass-android [#80](https://github.com/peerless2012/libass-android/pull/80)，B；合并 `f4b6497746ef5b6f70fba9762dcc3db9db3ef310` | Android 7 外挂大量事件的 JNI local ref 表溢出；修复事件对象 DeleteLocalRef | 本地不把全部事件转成 Java 对象，字体循环删除 local refs 且数量有界；该补丁不直接适用，保留生命周期/大量事件测试 |
+| [Media3 #2324](https://github.com/androidx/media/pull/2324)，B；访问时 open、draft、未合并 | 作者注明停止推进；维护者说明维护成本高而不计划合并；提案缺外挂、逐帧和 4K 性能 | 不等待官方完整 ASS，也不以更换普通 SsaParser 替代 libass。当前发布 SsaParser/SsaStyle 仍非完整字体附件/动画渲染器 |
+| [Matroska Attachments](https://www.matroska.org/technical/attachments.html)，A；动态规格访问日快照 | 字体属于容器附件，不能只读取字幕文本；附件 MIME/数据与字体选择需要完整链路 | 继续使用附件字节与字体内部命名匹配；补充大字体、乱序、尾部附件等有代表性的回归 |
+| [NDK ABIs](https://developer.android.com/ndk/guides/abis)、[其他构建系统](https://developer.android.com/ndk/guides/other_build_systems)，A | ARMv7 clang triple 为 `armv7a-linux-androideabi`，不同于 AArch64；ABI/调用约定与目标 API 必须一起固定 | ARMv7 独立 prefix/static archives/JNI，API 24；不复制 ARM64 二进制，也不以 64 位手机测试替代 32 位执行证据 |
+| 锁定 libass 源码 `89cc0f4e450d64f74281a17d7f11ed05229665e8`，A | `meson.build` 仅对 x86/AArch64 启用该版本手写 ASM，ARMv7 走可移植实现；不是更改一个目录即可获得 AArch64 同等加速 | ARMv7 支持可以构建，但性能须单独衡量；保留真实字幕、字体和缓存/预算契约，不宣称两 ABI 性能等同 |
+
+相关图形文字论文/技术博文已由第 4/10 节覆盖。本次决定是 ABI 构建和既有契约覆盖，不引入新渲染算法；重复收集论文不会改变该决定，因此不重开算法研究。
+
+### 18.4 是否需要优化
+
+需要先补 **ABI、打包校验及能力可解释性**，现有内核无需整体替换。当前附件乱序处理、字体隔离、实际媒体时钟、GLES2 紧密 mask、预乘 alpha、小缓存、单 worker 和 HDR 分层已有针对本项目的适配；原样导入第三方会丢失这些保护并扩大 Media3/二进制维护面。
+
+| 方案 | 正确性/兼容性/性能与维护代价 | 决定 |
+| --- | --- | --- |
+| 不改 | 64 位既有路径保持，但 32 位必然缺失 libass | 不满足新增要求 |
+| 原样改用 libass-android 整包 | 成熟接线可参考，但工厂替换、反射、偏移、默认缓存和 STL/二进制所有权需再次适配 | 不采用整体替换；参考已验证的具体修复 |
+| **扩展现有独立 libass 到 ARMv7** | 复用渲染/字体/时钟契约，按 ABI 独立交叉编译、匹配打包；32 位性能/地址空间须单测 | **本次实施**，同时修正仅识别 ELF64/单 ABI 的发布校验 |
+| 同时重写 Surface/时间阈值/字体缓存/尾部附件 | 可能扩大覆盖，但会涉及显示生命周期、时钟、网络 seek 和资源策略 | 按具体反馈另列可回退单元；本次记录缺口，保持已验收行为 |
+
+### 18.5 已批准的 32 位最小实施与验收
+
+实施范围：`ExoAssSession.java` 会话准入，`scripts/build_exo_ass_native.py`、`scripts/verify_exo_ass.py` 及其必要针对性测试，`third_party/exo-ass-lock.json`，独立 `third_party/exo-ass-native` 的 CMake/双 ABI prebuilt/manifest/provenance，以及本文件/总索引。App 现有 `jniLibs` 和 flavor `abiFilters` 已能选取对应库，不必改视频、音频、Media3 AAR、MPV 库或全局依赖版本。
+
+1. 用同一锁定源码/API 24/NDK 29，为 `armeabi-v7a` 和 `arm64-v8a` 分离交叉编译参数、输出、静态 archive 与来源记录。构建器选择明确的 ABI，发布清单逐 ABI 完整；不能把新脚本哈希冒充未重建库的构建输入。
+2. 移除仅 64 位进程的会话门槛，继续惰性加载、失败回退和现有准入/渲染预算。常规 32 位 flavor 应获得自身的 native 库；64 位正常路径保持。
+3. 校验同时覆盖 ELF32/ARM 与 ELF64/AArch64、API note、LOAD 对齐、SONAME/DT_NEEDED、JNI 导出、逐库哈希和 APK 对应 ABI 的字节。现有 verifier 的“默认 APK 不含 ASS”检查属于早期原型，应改为当前常规包必须携带匹配库的契约；不得削弱真实来源/字节/链接校验。
+4. 最小构建为电视 ARMv7 Debug 与手机 ARM64 Debug/测试 APK，隔离 App CMake staging，保护初始 `.cxx`。定向验证字体附件优先、官方 blur/transform、颜色及释放/seek；32 位设备可用时执行同一组原生用例。无 32 位设备时明确记录制品校验与实机验收的区别，不将“编译成功”写成“所有老电视正常”。
+5. 新库增量以最终文件和 APK ZIP 大小实测；JNI 依赖仍静态归属独立 Exo 库，不新增字体下载/隐式网络或修改 MPV。固定源码/许可证保留；版本、字体匹配、动画语义与回退阈值不为缩小体积而削减。
+
+本机执行估计：2026-09-28 10:25 Asia/Shanghai 起约 40 分钟，代码/原生 15、打包 10、定向验证 10、归档 5，目标约 11:05；32 位实体设备等待单列。当前有 8 核、已验证源缓存与 ARM64 静态 archive，ARMv7 archive 需首次编译；系统默认 JDK 17 需为 Gradle 指定现有 JDK 21。
+
+回滚：评估本身不改变运行时；32 位单元须把 Java 准入、CMake/脚本、锁、两 ABI 来源和制品作为一个原子提交。整体 revert 该提交恢复原 ARM64 配套状态；不得单独留下启用 32 位的 Java 而移除对应库。新单元提交/恢复标签由 guard 留痕，不推送。
+
+## 上一单元 Recovery anchor：HDR/DV（已归档）
+
 - 当前目标/授权（2026-09-19）：用户明确要求“修复这个bug，同样的视频mpv可以正常处理,exo没理由不能”，批准第 17 节 HDR/DV 独立 SDR 字幕层的窄修复与原片验证。
 - 当前单元：`E4-LIBASS-hdr-fix-20260919`，`upstream`；分支 `feature/mpv-dv7-fel`，基线/回滚锚点 `e85dc87988bbe8e3d67509426cb5e1d1a2cee3b7`。scope 为 Exo ASS Java、对应测试/debug fixture、独立 ASS JNI 与配套产物、本文件/索引；保护初始 `app/.cxx/` 的 104 个文件。
 - 已完成：确定 `ExoAssSession.admittedLocked()` 显式排除 Dolby Vision MIME、非 SDR transfer 和 BT.2020；核对当前 SSA packet 桥、独立 Surface 宿主和 native 颜色代码，完成第 17 节的窄方案取证。截图中的 Exo 为普通白字，MPV 保留大小、粗体和黄色英文；两图对白时间不同，不能当逐像素基准。
