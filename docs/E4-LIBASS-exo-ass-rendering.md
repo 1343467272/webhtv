@@ -3,11 +3,14 @@
 ## Recovery anchor
 
 - 当前目标/授权（2026-09-28）：用户结束声音替换调研，要求审阅当前 Exo 特效字幕/内嵌字体并对比 GitHub 成熟实现，随后明确“看看是否需要优化，然后补齐32位”。本次继续稳定任务 `E4-LIBASS`，先完成下面第 18 节评估，随后实施 32 位支持；无需再次询问该项实施授权。
-- 当前单元：`E4-LIBASS-compat-audit-20260928` / `assessment`；`main`，基线 `78634fefd4faf1852b414b6ec9e309144de8b655`。本单元只更新本文件和总索引；保护 `.codex-resume/`、`app/.cxx/`、`codex-resume` 共 108 个初始未跟踪文件。
+- 当前单元：`E4-LIBASS-armv7-20260928` / `upstream`，guard 已启动；`main`，基线 `f3f0eddf06df698979b857fb1fd79bee78e766cf`。范围为第 18.5 节及 `AssAttachmentTest.java`；保护 `.codex-resume/`、`app/.cxx/`、`codex-resume` 共 108 个初始未跟踪文件。
 - 已完成：实际 Java/独立 JNI/锁/构建/Media3 sources.jar 审阅，确认仅 64 位进程准入和单 arm64 库；核对字体附件、回退阈值、Surface、HDR/副字幕/拼接媒体边界；重新读取 GitHub 固定源码、PR/issue 和 NDK/Matroska 文档，结论见第 18 节。
-- 未验证：32 位库/包尚未构建，32 位运行与性能尚未验证。连接设备 vivo V2453A/API 35 只声明 `arm64-v8a`、`abilist32` 为空、native bridge 为 0，不能运行 ARMv7 测试；已请求可用的 32 位测试设备信息。
-- 证据：`/private/tmp/webhtv-exo-ass-audit-20260928/`；来源与决定在本文持久记录，不依赖临时目录才能理解结论。当前未修改产品代码、锁或原生制品。
-- 下一动作：完成评估文档静态检查与原子归档，按第 18.5 节启动已获授权的双 ABI 实施单元。
+- 已实施：`ExoAssSession.createIfEnabled` 移除仅 64 位进程门槛并保持惰性加载；`build_exo_ass_native.py` 按 `ABI_CONFIG` 分离 arm64-v8a/armeabi-v7a 交叉参数、静态 archive 与发布记录，公开发布仅在全部锁定 ABI 成功后写入；`verify_exo_ass.py` 改为覆盖 ELF32/ARM 与 ELF64/AArch64、API note、16 KiB LOAD 对齐、SONAME/DT_NEEDED、JNI 导出、逐库哈希、MANIFEST 及 APK 对应 ABI 字节；锁、CMake 与 provenance 升至双 ABI；新增 `scripts/test_verify_exo_ass.py` 与 `AssAttachmentTest` 32 位工厂用例。
+- 已验证：`scripts/test_verify_exo_ass.py` 10/10 通过；`scripts/verify_exo_ass.py` 的双 ABI native 段完整通过，含两库 ELF 架构、API 24 note、LOAD 对齐、链接依赖、JNI 导出、哈希与 MANIFEST 一致。
+- 未验证：32 位 APK 打包与 32 位实机运行/性能尚未完成（Gradle 定向构建因环境写入限制中止，未取得结论）。连接设备 vivo V2453A/API 35 只声明 `arm64-v8a`、`abilist32` 为空、native bridge 为 0，不能运行 ARMv7 测试；已请求可用的 32 位测试设备信息。
+- 既有环境差异：`verify_exo_ass.py` 的 `verify_media` 在 `androidx/media3/exoplayer/ExoPlayerImpl$Api31.class` 上报差异，HEAD 版本脚本在同一工作区复现同样失败，非本次改动引入，未在本次范围内处理。
+- 证据：`/private/tmp/webhtv-exo-ass-audit-20260928/`；来源与决定在本文持久记录，不依赖临时目录才能理解结论。评估已提交为 `f3f0eddf06df698979b857fb1fd79bee78e766cf`，恢复标签 `recovery/E4-LIBASS-compat-audit-20260928/20260928103133-f3f0eddf06df`。
+- 下一动作（用户已授权立即提交推送）：完成本单元原子提交与恢复 tag 后推送 `main`；32 位 APK 打包与实机验收作为未完成项单列，不得宣称 32 位已实机验收。
 
 ## 18. 设备差异复核与 32 位补齐方案（2026-09-28）
 
